@@ -3,7 +3,7 @@
 This is a place to store queries and data for a Neo4j QPP + GDS demo about wire management.
 
 You can run [these queries (csv script)](./building_queries.csv) from [neo4j workspace](https://workspace-preview.neo4j.io/).
-Just import (⬆) the csv from the query tab.
+Just download it and import (⬆) the csv in workspace from the query tab.
 
 You need a running Neo4j 5.9+ with
 - corresponding version of GDS installed
