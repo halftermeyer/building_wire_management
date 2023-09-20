@@ -1,0 +1,147 @@
+name,description,query,id,parentId,isFolder
+Wire Management General,,,0,,true
+🧹 clean,,"CALL {MATCH (n) DETACH DELETE n} IN TRANSACTIONS OF 10000 rows;
+CALL gds.graph.drop(""voxel_layable_wires_graph"", false);",1,0,false
+🏢 Parse csv,,"// parse csv
+LOAD CSV FROM ""file:///building.txt"" AS line
+WITH collect(line[0]) as lines
+WITH [l IN lines | CASE WHEN l STARTS WITH ""#"" THEN ""#"" ELSE l END] AS lines
+CALL apoc.coll.split(lines, ""#"")
+YIELD value
+WITH value
+WITH collect(value) AS building
+WITH range(0, size(building)-1) AS ixs, building
+WITH [ix IN ixs | {floor_num:ix+1, floor:building[ix]}] AS building
+UNWIND building AS floor
+WITH floor.floor_num AS z, floor.floor AS floor
+UNWIND range(0, size(floor)-1) AS x
+WITH z, x, floor[x] AS line
+UNWIND range(0, size(line)-1) AS y
+WITH z, x, y, substring(line,y,1) AS val
+CREATE (:Voxel {x:x, y:y, z:z, val:val});",2,0,false
+· Remove dot voxels,,"MATCH (n {val:'.'})
+DELETE n;",3,0,false
+⟀ 3D connect,,"MATCH (s:Voxel)
+WITH s.x AS x, s.y AS y, s.z AS z, s
+ORDER BY z
+WITH x, y, collect(s) AS line
+CALL apoc.nodes.link(line, ""HAS_ABOVE"");
+
+MATCH (a)-[r:HAS_ABOVE]->(b)
+WHERE b.z - a.z <> 1
+DELETE r;
+
+
+MATCH (s:Voxel)
+WITH s.x AS x, s.y AS y, s.z AS z, s
+ORDER BY y
+WITH x, z, collect(s) AS line
+CALL apoc.nodes.link(line, ""HAS_EAST"");
+
+MATCH (a)-[r:HAS_EAST]->(b)
+WHERE b.y - a.y <> 1
+DELETE r;
+
+
+MATCH (s:Voxel)
+WITH s.x AS x, s.y AS y, s.z AS z, s
+ORDER BY x
+WITH y, z, collect(s) AS line
+CALL apoc.nodes.link(line, ""HAS_NORTH"");
+
+MATCH (a)-[r:HAS_NORTH]->(b)
+WHERE b.x - a.x <> 1
+DELETE r;",4,0,false
++⍐ Label Lobbies and Elevators,,"MATCH (s:Voxel WHERE s.val IN [""+"", ""⍐""])
+SET s:Lobby;
+
+MATCH (s:Voxel WHERE s.val IN [""⍐""])
+SET s:Elevator:Bottom;",5,0,false
+⍐ Elevator only vertical access,,"MATCH (a:!(Elevator&Bottom))-[r:HAS_ABOVE]->(b)
+DELETE r;
+
+MATCH (a:Elevator&Bottom)-[r:HAS_ABOVE]->(b)
+SET b:Elevator:Top;",6,0,false
+🧶 QPP Connect via Lobby,,"MATCH (s:Voxel&!Lobby)
+CALL {
+WITH s
+MATCH p=(s)(
+    ()-[r1:HAS_NORTH|HAS_EAST]-(:Voxel&!Lobby)
+){0,2}(:Voxel&!Lobby)-[:HAS_NORTH|HAS_EAST]-(:Lobby)(
+    ()-[r2:HAS_EAST|HAS_NORTH|HAS_ABOVE]-(:Lobby)
+){0,5}(:Lobby)-[:HAS_NORTH|HAS_EAST]-(:Voxel&!Lobby)(
+    ()-[r3:HAS_NORTH|HAS_EAST]-(:Voxel&!Lobby)
+){0,2}(t WHERE t<>s)
+WITH s, t, size(r1+r2+r3)+2 AS wire_length,
+[n IN nodes(p)|elementId(n)] AS intermediary_voxels
+WHERE wire_length <= 7
+CREATE (s)-[:LAYABLE_WIRE {cost:1+log(wire_length), intermediary_voxels:intermediary_voxels}]->(t)
+} IN TRANSACTIONS OF 10 rows;",7,0,false
+🧶 QPP Connect directly,,"MATCH (s:Voxel)
+CALL {
+WITH s
+MATCH p=(s)(
+()-[r1:HAS_NORTH|HAS_EAST]-(:Voxel&!Lobby)
+){1,2}(t:Voxel&!Lobby)
+WITH s, t, size(r1) AS wire_length,
+[n IN nodes(p)|elementId(n)] AS intermediary_voxels
+WHERE wire_length <= 10
+CREATE (s)-[:LAYABLE_WIRE {cost:log(1+wire_length), intermediary_voxels:intermediary_voxels}]->(t)
+} IN TRANSACTIONS OF 10 rows;",8,0,false
+💻 declare 3 random IT rooms,,"MATCH (s:Voxel WHERE s.val = ""▢"")
+WITH s, rand() AS ord
+ORDER BY ord
+LIMIT 3
+SET s:ITRoom;",9,0,false
+🎯 Declare half of Rooms as targets,,"MATCH (s:Voxel&!Lobby)
+WHERE rand() < 0.50
+SET s:Target;",10,0,false
+⌱ Create Tree Virtual Root,,"CREATE (sr:Voxel:Virtual:SteinerRoot);
+
+MATCH (sr:SteinerRoot)
+MATCH (li:ITRoom)
+CREATE (sr)-[:LAYABLE_WIRE {cost:0.0}]->(li);",11,0,false
+📽️ Project graph into memory,,"CALL gds.graph.project(
+'voxel_layable_wires_graph',
+'Voxel',
+    {
+        LAYABLE_WIRE: {
+            properties: 'cost',
+            orientation: 'UNDIRECTED'
+        }
+    }
+);",12,0,false
+💪 Run Steiner Tree Algorithm,,"MATCH (t:Target)
+WITH collect(t) AS targets
+MATCH (s:SteinerRoot)
+WITH s, targets
+CALL gds.beta.steinerTree.stream('voxel_layable_wires_graph',
+    {
+        sourceNode: id(s),
+        targetNodes: [t IN targets | id(t)],
+        relationshipWeightProperty:""cost""
+    })
+YIELD nodeId, parentId, weight
+WITH gds.util.asNode(nodeId) AS node, gds.util.asNode(parentId) AS parent,weight
+MATCH (parent)-[c:LAYABLE_WIRE]-(node)
+WITH parent, node, c, weight, c.cost AS cost
+ORDER BY cost ASC
+WITH parent, node, collect(c)[0] AS c
+CREATE (parent)-[:STEINER_FOREST_WIRE {cost:c.cost, intermediary_voxels: c.intermediary_voxels}]->(node);",13,0,false
+🎨 Beautify for viz,,"// remove Steiner root
+MATCH (sr:SteinerRoot)
+DETACH DELETE sr;
+
+// create sections of cables to show elbow connections in Bloom
+MATCH (a)-[r:STEINER_FOREST_WIRE]->(b)
+WITH r, r.intermediary_voxels AS intermediary_voxels
+WITH r, apoc.coll.zip(intermediary_voxels[..-1],intermediary_voxels[1..]) AS wire_lines
+UNWIND wire_lines AS wire_line
+WITH wire_line[0] AS line_from, wire_line[1] AS line_to, elementId(r) AS wire
+MATCH (f WHERE elementId(f) = line_from), (t WHERE elementId(t) = line_to)
+CREATE (f)-[:STEINER_FOREST_WIRE_CHUNK {connexion:wire}]->(t);
+
+// Identify switches
+MATCH (sw)
+WHERE count{(sw)-[r:STEINER_FOREST_WIRE]->()} > 1
+SET sw:Switch;",14,0,false
